@@ -23,7 +23,7 @@ Company-owned Mac:
 curl -fsSL https://raw.githubusercontent.com/maudlin/mac-security-check/main/device-posture.sh | zsh -s -- --company
 ```
 
-For audit evidence, replace `main` with a commit SHA so everyone runs the same version.
+These always run the latest version. Each record and screenshot shows the script version (e.g. `v1.2`), and every version is tagged in this repo, so any record can be traced back to the exact code that produced it.
 
 ## Checks
 

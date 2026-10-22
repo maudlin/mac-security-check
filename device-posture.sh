@@ -10,7 +10,7 @@
 # installed-apps list) to a mac-security-check folder on the Desktop.
 
 emulate -L zsh
-VERSION=1.1
+VERSION=1.2
 
 # ── Policy ───────────────────────────────────────────────────────────────
 MIN_MACOS_MAJOR=15          # oldest macOS still receiving security fixes
@@ -379,7 +379,13 @@ record_sha=$(shasum -a 256 $record_file | cut -c1-16)
 
 # ── Report ───────────────────────────────────────────────────────────────
 
-[[ -t 1 ]] && printf '\e[8;44;132t'   # widen Terminal so rows don't wrap
+# Size Terminal to fit the report: wide enough not to wrap, no taller than needed
+typeset -i rows=$(( ${#ids} + 16 ))
+if (( ${#fails} )); then
+  rows=$(( ${#ids} + 12 )); for id in $fails; do card $id; rows+=$(( 3 + ${#steps} )); done
+fi
+(( rows < 24 )) && rows=24
+[[ -t 1 ]] && printf '\e[8;%d;132t' $rows
 clear
 rule="  ${D}$(printf '─%.0s' {1..126})${X}"
 kind=$( (( company )) && print "Company-owned Mac" || print "Contractor Mac")
