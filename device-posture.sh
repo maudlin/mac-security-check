@@ -6,21 +6,23 @@
 # Usage: zsh device-posture.sh              contractor / personal Mac (default; collects the least)
 #        zsh device-posture.sh --company    company-owned Mac (adds Bitdefender, config, apps list)
 #        curl -fsSL <url> | zsh -s -- --company
-# No sudo required. Changes nothing, except writing the apps list to the Desktop in --company mode.
+# No sudo required. Changes no settings. Writes a record of every run (and, with --company, an
+# installed-apps list) to a mac-security-check folder on the Desktop.
 
 emulate -L zsh
-VERSION=2026.10.22
+VERSION=1.1
 
 # ── Policy ───────────────────────────────────────────────────────────────
 MIN_MACOS_MAJOR=15          # oldest macOS still receiving security fixes
-MAX_DISPLAY_SLEEP_MIN=5     # display turns off within this many minutes (every power source)
-MAX_LOCK_DELAY_SEC=5        # password required within this many seconds of display off
+MAX_PATCH_DAYS=14           # a macOS update may wait this many days after Apple releases it (warning until then)
+MAX_LOCK_MIN=5              # screen locks (password required) within this many minutes of inactivity
 MAX_DEFS_AGE_DAYS=3         # Bitdefender definitions no older than this
 MAX_CLOCK_DRIFT_SEC=2       # clock within this many seconds of Apple's time server
 COMPANY_AV="Bitdefender"
 COMPANY_AV_PROCESS="BDLDaemon"
 BD_SIGNATURES=/Library/Bitdefender/AVP/signatures
 BD_APP="/Applications/Endpoint Security for Mac.app"
+OUT_DIR=~/Desktop/mac-security-check
 
 # Anti-virus accepted on contractor Macs: process name → product
 typeset -A CONTRACTOR_AV=(
@@ -35,19 +37,16 @@ typeset -A CONTRACTOR_AV=(
 company=0
 [[ " $* " == *" --company "* ]] && company=1
 
-G=$'\e[32m' R=$'\e[31m' B=$'\e[1m' D=$'\e[2m' X=$'\e[0m'
+G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' B=$'\e[1m' D=$'\e[2m' X=$'\e[0m'
 typeset -a ids
 typeset -A ok label plain evcmd evout
 
-record() {  # record <id> <ok:1|0> <label> <plain-English result> <evidence command> <evidence output>
+# ok: 1 = pass, 2 = warning (doesn't block READY), 0 = fail
+record() {  # record <id> <ok> <label> <plain-English result> <evidence command> <evidence output>
   ids+=$1; ok[$1]=$2; label[$1]=$3; plain[$1]=$4; evcmd[$1]=$5; evout[$1]=$6
 }
 
-minutes() {  # minutes <seconds> → "immediately" / "after 30 seconds" / "after 5 minutes"
-  (( $1 == 0 )) && { print immediately; return }
-  (( $1 < 60 )) && { print "after $1 seconds"; return }
-  print "after $(( $1 / 60 )) minutes"
-}
+json_str() { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; print -rn -- "\"$s\"" }
 
 print "Checking this Mac (takes about 10 seconds)…"
 
@@ -65,17 +64,54 @@ else
   record macos 0 "macOS version" "macOS $os_ver no longer gets security fixes" "sw_vers -productVersion" "$os_ver"
 fi
 
-# Only same-major updates count; optional major upgrades are ignored
+# Pending updates. Apple's public release feed (the one MDMs use) dates each macOS release, so a
+# missing update is a warning for MAX_PATCH_DAYS after the first newer release, then a fail.
+# Optional upgrades to a newer major version are ignored.
 su=$(softwareupdate --list 2>&1)
 pending=(${(f)"$(awk -v maj=$os_major -F'Title: |, Version: |, Size' '
-  /Title:/ { split($3, v, "."); if ($2 ~ /^macOS/ && v[1] != maj) next; print $2 " " $3 }' <<< $su)"})
-if [[ $su == *"No new software available"* ]]; then
+  /Title:/ { split($3, v, "."); if ($2 ~ /^macOS/ && v[1] != maj) next; print $2 }' <<< $su)"})
+pmv=$(mktemp -t pmv)
+behind=""
+if curl -fsS --max-time 8 -o $pmv https://gdmf.apple.com/v2/pmv 2>/dev/null; then
+  # Prints "current", or "<latest version> <date the first newer version was released>"
+  behind=$(osascript -l JavaScript - $pmv $os_ver 2>/dev/null <<'JS'
+function run(argv) {
+  ObjC.import('Foundation')
+  const raw = $.NSString.stringWithContentsOfFileEncodingError(argv[0], $.NSUTF8StringEncoding, null).js
+  const cmp = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d } return 0 }
+  const mine = argv[1], major = mine.split('.')[0]
+  const newer = JSON.parse(raw).AssetSets.macOS.filter(a => a.ProductVersion.split('.')[0] === major && cmp(a.ProductVersion, mine) > 0)
+  if (!newer.length) return 'current'
+  newer.sort((a, b) => cmp(a.ProductVersion, b.ProductVersion))
+  return [newer[newer.length - 1].ProductVersion, newer.map(a => a.PostingDate).sort()[0]].join(' ')
+}
+JS
+)
+fi
+rm -f $pmv
+
+if [[ $behind == current ]]; then
+  if [[ $su == *"No new software available"* ]] || (( ! ${#pending} )); then
+    record updates 1 "Software updates" "Up to date" "softwareupdate --list" "No new software available."
+  else
+    record updates 2 "Software updates" "macOS is up to date. Also waiting: ${(j:, :)pending}" \
+      "softwareupdate --list" "macOS current · waiting: ${(j:, :)pending}"
+  fi
+elif [[ -n $behind ]]; then
+  latest=${behind% *} since=${behind#* }
+  days=$(( ($(date +%s) - $(date -j -f %Y-%m-%d "$since" +%s)) / 86400 ))
+  ev="macOS $latest available since $since ($days days)"
+  if (( days > MAX_PATCH_DAYS )); then
+    record updates 0 "Software updates" "macOS $latest is overdue: updates have been waiting $days days (limit $MAX_PATCH_DAYS)" \
+      "softwareupdate -l; Apple release feed" "$ev"
+  else
+    record updates 2 "Software updates" "macOS $latest is waiting. Install it within $(( MAX_PATCH_DAYS - days )) days" \
+      "softwareupdate -l; Apple release feed" "$ev"
+  fi
+elif [[ $su == *"No new software available"* ]]; then
   record updates 1 "Software updates" "Up to date" "softwareupdate --list" "No new software available."
 elif (( ${#pending} )); then
-  record updates 0 "Software updates" "${#pending} waiting to install: ${(j:, :)pending}" \
-    "softwareupdate --list" "${#pending} pending: ${(j:, :)pending}"
-elif [[ $su == *"Title:"* ]]; then
-  record updates 1 "Software updates" "Up to date" "softwareupdate --list" "only optional macOS upgrades available"
+  record updates 2 "Software updates" "Waiting to install: ${(j:, :)pending}" "softwareupdate --list" "pending: ${(j:, :)pending}"
 else
   record updates 0 "Software updates" "Couldn't check. Are you connected to the internet?" \
     "softwareupdate --list" "could not reach Apple"
@@ -109,27 +145,36 @@ else
   record autologin 0 "Automatic login" "On (logs straight in as $autologin)" "defaults read …loginwindow autoLoginUser" "$autologin"
 fi
 
-# Every power source must turn the display off in time; 0 means never
-sleep_ok=1; sleep_plain=() sleep_ev=()
-for src mins in $(pmset -g custom | awk '/Power:/{src=$1} /displaysleep/{print src, $2}'); do
-  (( mins == 0 || mins > MAX_DISPLAY_SLEEP_MIN )) && sleep_ok=0
-  sleep_ev+="$src $mins"
-  case $src in Battery) where="on battery" ;; AC) where="when plugged in" ;; *) where="on $src" ;; esac
-  (( mins == 0 )) && sleep_plain+="never $where" || sleep_plain+="after $mins min $where"
-done
-record displaysleep $sleep_ok "Screen turns off" "${(j:, :)sleep_plain}" "pmset -g custom" "displaysleep ${(j:, :)sleep_ev}"
-
+# Screen locks after: whichever starts first of the screen saver and display off, plus the delay
+# before a password is required. Worst case across power sources (0 means never).
 lock=$(sysadminctl -screenLock status 2>&1 | tail -1 | sed 's/.*\] //')
 case $lock in
   *immediate*) delay=0 ;;
   *seconds*)   delay=${${lock##*is }%% seconds*} ;;
   *)           delay=-1 ;;
 esac
+ss=$(defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null); ss_min=$(( ${ss:-0} / 60 ))
+worst=0 worst_where="" never_where="" sleep_ev=()
+for src mins in $(pmset -g custom | awk '/Power:/{src=$1} /displaysleep/{print src, $2}'); do
+  sleep_ev+="$src $mins"
+  case $src in Battery) where="on battery" ;; AC) where="when plugged in" ;; *) where="on $src" ;; esac
+  idle=$mins
+  (( ss_min > 0 && (idle == 0 || ss_min < idle) )) && idle=$ss_min
+  if (( idle == 0 )); then never_where=$where
+  elif (( idle > worst )); then worst=$idle worst_where=$where
+  fi
+done
+lock_min=$(( worst + (delay + 59) / 60 ))
+lock_ev="displaysleep ${(j:, :)sleep_ev}$( (( ss_min )) && print " · screensaver ${ss_min}m") · delay ${delay}s"
+lock_cmd="pmset -g custom; sysadminctl -screenLock"
 if (( delay < 0 )); then
-  record lockdelay 0 "Password on wake" "Not required" "sysadminctl -screenLock status" "$lock"
+  record screenlock 0 "Screen locks after" "Never: no password is needed to wake it" "$lock_cmd" "$lock"
+elif [[ -n $never_where ]]; then
+  record screenlock 0 "Screen locks after" "Never $never_where: the screen never turns off" "$lock_cmd" "$lock_ev"
+elif (( worst * 60 + delay <= MAX_LOCK_MIN * 60 )); then
+  record screenlock 1 "Screen locks after" "$lock_min min" "$lock_cmd" "$lock_ev → $lock_min min"
 else
-  record lockdelay $(( delay <= MAX_LOCK_DELAY_SEC )) "Password on wake" "Required $(minutes $delay)" \
-    "sysadminctl -screenLock status" "$lock"
+  record screenlock 0 "Screen locks after" "$lock_min min $worst_where (limit $MAX_LOCK_MIN)" "$lock_cmd" "$lock_ev → $lock_min min"
 fi
 
 fw=$(/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>&1)
@@ -195,7 +240,8 @@ if (( company )); then
     record sharing 1 "Remote access & sharing" "Off" "netstat -an | grep LISTEN" "nothing on :22 :445 :5900"
   fi
 
-  apps_file=~/Desktop/apps-$serial-$(date +%F).txt
+  mkdir -p $OUT_DIR
+  apps_file=$OUT_DIR/apps-$serial-$(date +%F).txt
   {
     print "Installed applications · $model · serial $serial · $host · $USER · $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     for app in ${(f)"$(find /Applications ~/Applications -maxdepth 3 -name '*.app' -prune 2>/dev/null | sort -f)"}; do
@@ -205,8 +251,8 @@ if (( company )); then
   if [[ -s $apps_file ]]; then
     n_apps=$(( $(wc -l < $apps_file) - 1 ))
     apps_sha=$(shasum -a 256 $apps_file | cut -c1-16)
-    record apps 1 "Installed apps list" "$n_apps apps saved to Desktop/${apps_file:t}" \
-      "find /Applications -name '*.app'" "$n_apps apps → Desktop/${apps_file:t}"
+    record apps 1 "Installed apps list" "$n_apps apps saved to ${apps_file:t}" \
+      "find /Applications -name '*.app'" "$n_apps apps → ${apps_file:t}"
   else
     record apps 0 "Installed apps list" "Couldn't save the list to your Desktop" "find /Applications -name '*.app'" "write failed"
   fi
@@ -222,8 +268,7 @@ typeset -A PANE=(
   gatekeeper   com.apple.settings.PrivacySecurity.extension
   password     com.apple.Users-Groups-Settings.extension
   autologin    com.apple.Users-Groups-Settings.extension
-  displaysleep com.apple.Lock-Screen-Settings.extension
-  lockdelay    com.apple.Lock-Screen-Settings.extension
+  screenlock   com.apple.Lock-Screen-Settings.extension
   firewall     com.apple.Network-Settings.extension
   sharing      com.apple.Sharing-Settings.extension
   clock        com.apple.Date-Time-Settings.extension
@@ -238,7 +283,7 @@ card() {  # card <id>: sets title, why, steps
       why="Older versions of macOS no longer get security fixes, so known holes stay open."
       steps=("$SETTINGS" "Click General, then Software Update" "Install the macOS upgrade it offers. If your Mac is too old to upgrade, ask for help") ;;
     updates)
-      title="Install waiting updates"
+      title="Install overdue updates"
       why="Updates fix security holes that attackers already know about."
       steps=("Save your work: your Mac may restart" "$SETTINGS" "Click General, then Software Update" "Click Update Now (or Restart Now) and let it finish") ;;
     autoupdate)
@@ -257,14 +302,12 @@ card() {  # card <id>: sets title, why, steps
       title="Turn off automatic login"
       why="Automatic login skips your password, so anyone who opens the lid gets straight in."
       steps=("$SETTINGS" "Click Users & Groups" "Set \"Automatically log in as\" to Off") ;;
-    displaysleep)
-      title="Make the screen turn off sooner"
-      why="Your Mac then locks itself within $MAX_DISPLAY_SLEEP_MIN minutes if you walk away."
-      steps=("$SETTINGS" "Click Lock Screen" "Set every \"Turn display off … when inactive\" option to $MAX_DISPLAY_SLEEP_MIN minutes or less") ;;
-    lockdelay)
-      title="Ask for your password as soon as the screen turns off"
-      why="Otherwise someone can wake your Mac and use it without the password."
-      steps=("$SETTINGS" "Click Lock Screen" "Set \"Require password after screen saver begins or display is turned off\" to Immediately") ;;
+    screenlock)
+      title="Make your Mac lock itself within $MAX_LOCK_MIN minutes"
+      why="If you walk away, nobody else can use your Mac or see your work."
+      steps=("$SETTINGS" "Click Lock Screen"
+             "Set every \"Turn display off … when inactive\" option to $MAX_LOCK_MIN minutes or less"
+             "Set \"Require password after screen saver begins or display is turned off\" to Immediately") ;;
     firewall)
       title="Turn on the firewall"
       why="It blocks other devices on the same network (e.g. café or hotel wifi) from connecting to your Mac."
@@ -304,12 +347,39 @@ card() {  # card <id>: sets title, why, steps
   esac
 }
 
-# ── Report ───────────────────────────────────────────────────────────────
-fails=(); for id in $ids; do (( ok[$id] )) || fails+=$id; done
+# ── Record file: one per device per day, written on every run ────────────
+fails=() warns=()
+for id in $ids; do case ${ok[$id]} in 0) fails+=$id ;; 2) warns+=$id ;; esac; done
+typeset -A result_word=(1 pass 2 warn 0 fail)
 
-[[ -t 1 ]] && printf '\e[8;44;120t'   # widen Terminal so rows don't wrap
+mkdir -p $OUT_DIR
+record_file=$OUT_DIR/posture-$serial-$(date +%F).json
+{
+  print "{"
+  print -r -- "  \"tool\": \"mac-security-check\", \"version\": $(json_str $VERSION),"
+  print -r -- "  \"mode\": $(json_str $( (( company )) && print company || print contractor)),"
+  print -r -- "  \"run_at_utc\": $(json_str "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"), \"run_at_local\": $(json_str "$(date '+%Y-%m-%d %H:%M:%S %Z')"),"
+  print -r -- "  \"device\": {\"model\": $(json_str $model), \"serial\": $(json_str $serial), \"name\": $(json_str $host),"
+  print -r -- "             \"macos\": $(json_str $os_ver), \"build\": $(json_str $os_build),"
+  print -r -- "             \"user\": $(json_str $USER), \"full_name\": $(json_str "$(id -F)")},"
+  print -r -- "  \"result\": $(json_str $( (( ${#fails} )) && print not_ready || print ready)),"
+  print -r -- "  \"checks\": ["
+  sep=""
+  for id in $ids; do
+    print -rn -- "$sep    {\"id\": $(json_str $id), \"name\": $(json_str ${label[$id]}), \"result\": $(json_str ${result_word[${ok[$id]}]}),"
+    print -rn -- " \"value\": $(json_str ${plain[$id]}), \"command\": $(json_str ${evcmd[$id]}), \"output\": $(json_str ${evout[$id]})}"
+    sep=$',\n'
+  done
+  print "\n  ]"
+  print "}"
+} > $record_file
+record_sha=$(shasum -a 256 $record_file | cut -c1-16)
+
+# ── Report ───────────────────────────────────────────────────────────────
+
+[[ -t 1 ]] && printf '\e[8;44;132t'   # widen Terminal so rows don't wrap
 clear
-rule="  ${D}$(printf '─%.0s' {1..112})${X}"
+rule="  ${D}$(printf '─%.0s' {1..126})${X}"
 kind=$( (( company )) && print "Company-owned Mac" || print "Contractor Mac")
 print ""
 print "  ${B}DEVICE SECURITY CHECK${X}   ${B}$(date '+%a %d %b %Y %H:%M:%S %Z')${X}  ${D}$(date -u '+%Y-%m-%dT%H:%M:%SZ')${X}"
@@ -319,19 +389,29 @@ print $rule
 
 if (( ! ${#fails} )); then
   for id in $ids; do
-    printf "  ${G}✔${X}  %-25s ${D}%-40s${X} %s\n" "${label[$id]}" "${evcmd[$id]}" "${evout[$id]}"
+    mark=$( (( ok[$id] == 2 )) && print "${Y}!${X}" || print "${G}✔${X}")
+    printf "  %s  %-25s ${D}%-41s${X} %s\n" "$mark" "${label[$id]}" "${evcmd[$id]}" "${evout[$id]}"
   done
   print $rule
-  print "  ${G}${B}✔ READY: all ${#ids} checks pass.${X}  Take a screenshot of this whole screen (⌘⇧3) and send it in."
-  (( company )) && print "  Send the apps list from your Desktop too: ${apps_file:t}  ${D}sha256 $apps_sha…${X}"
+  print -n "  ${G}${B}✔ READY: all ${#ids} checks pass.${X}"
+  if (( ${#warns} )); then
+    notes=(); for id in $warns; do notes+=${plain[$id]}; done
+    print -n "  ${Y}! allowed for now: ${(j:; :)notes}${X}"
+  fi
+  print ""
+  print "  Take a screenshot of this whole screen (⌘⇧3) and send it in with the files from the ${B}mac-security-check${X} folder on your Desktop:"
+  print "    ${record_file:t}  ${D}sha256 $record_sha…${X}"
+  (( company )) && print "    ${apps_file:t}  ${D}sha256 $apps_sha…${X}"
   print "  ${D}Each check is a built-in macOS command (middle column) that anyone can re-run to verify. Check v$VERSION${X}"
   print ""
   exit 0
 fi
 
 for id in $ids; do
-  if (( ok[$id] )); then
+  if (( ok[$id] == 1 )); then
     printf "  ${G}✔${X}  %-26s %s\n" "${label[$id]}" "${plain[$id]}"
+  elif (( ok[$id] == 2 )); then
+    printf "  ${Y}!${X}  %-26s ${Y}%s${X}\n" "${label[$id]}" "${plain[$id]}"
   else
     printf "  ${R}✖${X}  ${B}%-26s${X} ${R}%s${X}\n" "${label[$id]}" "${plain[$id]}"
   fi
@@ -348,7 +428,8 @@ for id in $fails; do
   for st in $steps; do s+=1; print "     $s) $st"; done
 done
 print ""
-print "  When you're done, run this check again. Stuck? Take a screenshot of this screen and ask for help."
+print "  When you're done, run this check again. Stuck? Take a screenshot of this screen and ask for help,"
+print "  sending the ${B}mac-security-check${X} folder from your Desktop too."
 
 # Offer to open the right settings page (reads the keyboard even when piped from curl)
 if [[ -t 1 ]] && { exec 3</dev/tty } 2>/dev/null; then

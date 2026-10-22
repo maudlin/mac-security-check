@@ -5,7 +5,7 @@ A one-screen macOS security check for collecting device evidence (e.g. for ISO 2
 - **All checks pass:** prints an evidence table showing each built-in macOS command and its verbatim output, ready to screenshot.
 - **Anything fails:** prints a plain-English checklist with step-by-step fixes and why each one matters.
 
-It needs no `sudo` and changes nothing. In `--company` mode it also writes an installed-apps list to the Desktop.
+It needs no `sudo` and changes no settings. Every run writes a record, `posture-<serial>-<date>.json`, to a `mac-security-check` folder on the Desktop. The record holds the device, user, macOS build, script version, and each check's value and result. In `--company` mode it also writes an installed-apps list there. Send the folder with the screenshot.
 
 ## Run it
 
@@ -29,10 +29,10 @@ For audit evidence, replace `main` with a commit SHA so everyone runs the same v
 
 | Check | Contractor | Company |
 |---|:-:|:-:|
-| macOS supported, no pending updates, automatic security updates on | ✔ | ✔ |
+| macOS supported, automatic security updates on, no overdue updates (a macOS update is a warning for 14 days after Apple releases it, then a fail) | ✔ | ✔ |
 | FileVault on | ✔ | ✔ |
 | Login password set, automatic login off | ✔ | ✔ |
-| Display off within 5 min, password required immediately | ✔ | ✔ |
+| Screen locks within 5 min (screen saver or display off, plus password delay; worst power source) | ✔ | ✔ |
 | Firewall on | ✔ | ✔ |
 | Anti-virus running (any listed product / a named product) | ✔ | ✔ |
 | Gatekeeper and SIP on | | ✔ |
