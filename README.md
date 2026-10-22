@@ -5,7 +5,7 @@ A one-screen macOS security check for collecting device evidence (e.g. for ISO 2
 - **All checks pass:** prints an evidence table showing each built-in macOS command and its verbatim output, ready to screenshot.
 - **Anything fails:** prints a plain-English checklist with step-by-step fixes and why each one matters.
 
-It needs no `sudo` and changes no settings. Every run writes a record, `posture-<serial>-<date>.json`, to a `mac-security-check` folder on the Desktop. The record holds the device, user, macOS build, script version, and each check's value and result. In `--company` mode it also writes an installed-apps list there. Send the folder with the screenshot.
+It needs no `sudo` and changes no settings. Every run, pass or fail, writes its own record, `posture-<serial>-<date>-<time>.json`, to a `mac-security-check` folder on the Desktop. Records are never overwritten, so the folder shows failed runs as well as the pass that followed the fix. Each record holds the device, user, macOS build, script version, and each check's value and result. In `--company` mode an installed-apps list goes there too. On a pass, the user takes a window screenshot with macOS's own shortcut (⌘⇧4, Space, click), so Terminal needs no screen-recording permission. The script spots the new file and moves it into the folder. The user then sends the whole folder.
 
 ## Run it
 
@@ -41,3 +41,7 @@ For audit evidence, replace `main` with a commit SHA so everyone runs the same v
 | Installed applications list (saved to Desktop) | | ✔ |
 
 Thresholds and the required anti-virus product are set in the policy block at the top of the script.
+
+## Not covered
+
+- **Anti-virus real-time protection.** macOS doesn't let a standard user read it: Bitdefender's settings are encrypted and its CLI needs root. The script shows the product is running and how old its definitions are. Use the anti-virus management console (e.g. Bitdefender GravityZone) as the evidence for real-time protection.

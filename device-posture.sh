@@ -353,7 +353,9 @@ for id in $ids; do case ${ok[$id]} in 0) fails+=$id ;; 2) warns+=$id ;; esac; do
 typeset -A result_word=(1 pass 2 warn 0 fail)
 
 mkdir -p $OUT_DIR
-record_file=$OUT_DIR/posture-$serial-$(date +%F).json
+# One file per run (never overwritten), so failed runs stay on record alongside the pass
+run_stamp=$(date +%F-%H%M%S)
+record_file=$OUT_DIR/posture-$serial-$run_stamp.json
 {
   print "{"
   print -r -- "  \"tool\": \"mac-security-check\", \"version\": $(json_str $VERSION),"
@@ -399,10 +401,41 @@ if (( ! ${#fails} )); then
     print -n "  ${Y}! allowed for now: ${(j:; :)notes}${X}"
   fi
   print ""
-  print "  Take a screenshot of this whole screen (⌘⇧3) and send it in with the files from the ${B}mac-security-check${X} folder on your Desktop:"
+  print "  Saved to the ${B}mac-security-check${X} folder on your Desktop:"
   print "    ${record_file:t}  ${D}sha256 $record_sha…${X}"
   (( company )) && print "    ${apps_file:t}  ${D}sha256 $apps_sha…${X}"
+  print "  ${D}The folder also keeps every earlier run, including any that didn't pass. Send all of it.${X}"
   print "  ${D}Each check is a built-in macOS command (middle column) that anyone can re-run to verify. Check v$VERSION${X}"
+  print ""
+
+  # The user takes the screenshot with macOS's own shortcut (no permission prompts for Terminal);
+  # we spot the new file in their screenshot folder and move it in next to the record.
+  shot_dir=$(defaults read com.apple.screencapture location 2>/dev/null)
+  shot_dir=${~shot_dir:-$HOME/Desktop}
+  if [[ -t 1 && -d $shot_dir ]]; then
+    marker=$(mktemp -t shot)
+    print "  ${B}Now take a screenshot of this window:${X} press ${B}⌘⇧4${X}, then ${B}Space${X}, then click this window."
+    print -n "  ${D}Waiting for your screenshot…${X}"
+    found=""
+    for i in {1..180}; do
+      found=$(find $shot_dir -maxdepth 1 -type f -newer $marker ! -name '.*' \
+        \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.heic' -o -iname '*.tiff' -o -iname '*.pdf' \) 2>/dev/null | head -1)
+      [[ -n $found ]] && break
+      sleep 1
+    done
+    rm -f $marker
+    print -n '\r\e[2K'
+    if [[ -n $found ]]; then
+      sleep 1   # let macOS finish writing it
+      mv "$found" $OUT_DIR/screenshot-$serial-$run_stamp.${found:e:l}
+      print "  ${G}✔ Got it.${X} Now send the whole ${B}mac-security-check${X} folder (opening it for you)."
+      open $OUT_DIR
+    else
+      print "  No screenshot seen. Take one (⌘⇧4, then Space, then click this window) and add it to the folder."
+    fi
+  else
+    print "  Take a screenshot of this window: press ⌘⇧4, then Space, then click it."
+  fi
   print ""
   exit 0
 fi
@@ -428,8 +461,8 @@ for id in $fails; do
   for st in $steps; do s+=1; print "     $s) $st"; done
 done
 print ""
-print "  When you're done, run this check again. Stuck? Take a screenshot of this screen and ask for help,"
-print "  sending the ${B}mac-security-check${X} folder from your Desktop too."
+print "  When you're done, run this check again. This result is saved in the ${B}mac-security-check${X} folder"
+print "  on your Desktop. Stuck? Take a screenshot of this screen and ask for help, sending that folder too."
 
 # Offer to open the right settings page (reads the keyboard even when piped from curl)
 if [[ -t 1 ]] && { exec 3</dev/tty } 2>/dev/null; then
