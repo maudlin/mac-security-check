@@ -10,7 +10,7 @@
 # installed-apps list) to a mac-security-check folder on the Desktop.
 
 emulate -L zsh
-VERSION=1.2
+VERSION=1.3
 
 # ── Policy ───────────────────────────────────────────────────────────────
 MIN_MACOS_MAJOR=15          # oldest macOS still receiving security fixes
@@ -380,7 +380,7 @@ record_sha=$(shasum -a 256 $record_file | cut -c1-16)
 # ── Report ───────────────────────────────────────────────────────────────
 
 # Size Terminal to fit the report: wide enough not to wrap, no taller than needed
-typeset -i rows=$(( ${#ids} + 16 ))
+typeset -i rows=$(( ${#ids} + 18 ))
 if (( ${#fails} )); then
   rows=$(( ${#ids} + 12 )); for id in $fails; do card $id; rows+=$(( 3 + ${#steps} )); done
 fi
@@ -407,37 +407,28 @@ if (( ! ${#fails} )); then
     print -n "  ${Y}! allowed for now: ${(j:; :)notes}${X}"
   fi
   print ""
-  print "  Saved to the ${B}mac-security-check${X} folder on your Desktop:"
+  print "  Saved to the ${B}${OUT_DIR:t}${X} folder on your Desktop:"
   print "    ${record_file:t}  ${D}sha256 $record_sha…${X}"
   (( company )) && print "    ${apps_file:t}  ${D}sha256 $apps_sha…${X}"
-  print "  ${D}The folder also keeps every earlier run, including any that didn't pass. Send all of it.${X}"
+  print "  ${D}The folder keeps every run, including any that didn't pass. Upload any you haven't uploaded before.${X}"
   print "  ${D}Each check is a built-in macOS command (middle column) that anyone can re-run to verify. Check v$VERSION${X}"
   print ""
 
-  # The user takes the screenshot with macOS's own shortcut (no permission prompts for Terminal);
-  # we spot the new file in their screenshot folder and move it in next to the record.
-  shot_dir=$(defaults read com.apple.screencapture location 2>/dev/null)
-  shot_dir=${~shot_dir:-$HOME/Desktop}
-  if [[ -t 1 && -d $shot_dir ]]; then
-    marker=$(mktemp -t shot)
-    print "  ${B}Now take a screenshot of this window:${X} press ${B}⌘⇧4${X}, then ${B}Space${X}, then click this window."
-    print -n "  ${D}Waiting for your screenshot…${X}"
-    found=""
-    for i in {1..180}; do
-      found=$(find $shot_dir -maxdepth 1 -type f -newer $marker ! -name '.*' \
-        \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.heic' -o -iname '*.tiff' -o -iname '*.pdf' \) 2>/dev/null | head -1)
-      [[ -n $found ]] && break
-      sleep 1
-    done
-    rm -f $marker
-    print -n '\r\e[2K'
-    if [[ -n $found ]]; then
-      sleep 1   # let macOS finish writing it
-      mv "$found" $OUT_DIR/screenshot-$serial-$run_stamp.${found:e:l}
-      print "  ${G}✔ Got it.${X} Now send the whole ${B}mac-security-check${X} folder (opening it for you)."
+  # macOS's own window picker writes straight to our file, whatever the user's screenshot
+  # settings. The first run may ask to let Terminal record the screen; if they decline or
+  # press Esc, fall back to the manual shortcut.
+  shot=$OUT_DIR/screenshot-$serial-$run_stamp.png
+  if [[ -t 1 ]]; then
+    print "  ${B}Now take a screenshot of this window:${X} click this window when the camera appears ${D}(Esc to skip)${X}."
+    print "  ${D}If macOS asks to let Terminal record the screen or use the picker, click Allow.${X}"
+    screencapture -i -W -o $shot 2>/dev/null
+    if [[ -s $shot ]]; then
+      print "  ${G}✔ Screenshot saved${X} as ${shot:t}."
+      print "  Now upload the files in the ${B}${OUT_DIR:t}${X} folder to your device-checks folder (opening it for you)."
       open $OUT_DIR
     else
-      print "  No screenshot seen. Take one (⌘⇧4, then Space, then click this window) and add it to the folder."
+      print "  No screenshot saved. Take one yourself (⌘⇧4, then Space, then click this window),"
+      print "  then upload the files in the ${B}${OUT_DIR:t}${X} folder to your device-checks folder."
     fi
   else
     print "  Take a screenshot of this window: press ⌘⇧4, then Space, then click it."
@@ -467,8 +458,8 @@ for id in $fails; do
   for st in $steps; do s+=1; print "     $s) $st"; done
 done
 print ""
-print "  When you're done, run this check again. This result is saved in the ${B}mac-security-check${X} folder"
-print "  on your Desktop. Stuck? Take a screenshot of this screen and ask for help, sending that folder too."
+print "  When you're done, run this check again. This result is saved in the ${B}${OUT_DIR:t}${X} folder"
+print "  on your Desktop. Stuck? Take a screenshot of this screen and ask for help, sharing the files in that folder too."
 
 # Offer to open the right settings page (reads the keyboard even when piped from curl)
 if [[ -t 1 ]] && { exec 3</dev/tty } 2>/dev/null; then

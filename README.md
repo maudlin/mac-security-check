@@ -5,7 +5,14 @@ A one-screen macOS security check for collecting device evidence (e.g. for ISO 2
 - **All checks pass:** prints an evidence table showing each built-in macOS command and its verbatim output, ready to screenshot.
 - **Anything fails:** prints a plain-English checklist with step-by-step fixes and why each one matters.
 
-It needs no `sudo` and changes no settings. Every run, pass or fail, writes its own record, `posture-<serial>-<date>-<time>.json`, to a `mac-security-check` folder on the Desktop. Records are never overwritten, so the folder shows failed runs as well as the pass that followed the fix. Each record holds the device, user, macOS build, script version, and each check's value and result. In `--company` mode an installed-apps list goes there too. On a pass, the user takes a window screenshot with macOS's own shortcut (⌘⇧4, Space, click), so Terminal needs no screen-recording permission. The script spots the new file and moves it into the folder. The user then sends the whole folder.
+It needs no `sudo` and changes no settings. Every run, pass or fail, writes its own record, `posture-<serial>-<date>-<time>.json`, to a `mac-security-check` folder on the Desktop. Records are never overwritten, so the folder shows failed runs as well as the pass that followed the fix. Each record holds the device, user, macOS build, script version, and each check's value and result. In `--company` mode an installed-apps list goes there too. On a pass, macOS's window picker opens and the user clicks the Terminal window. The screenshot goes straight into the folder, whatever their screenshot settings. The first time, macOS may ask to let Terminal record the screen; if the user declines or presses Esc, the script tells them to take it with ⌘⇧4 instead. The user then uploads the files in the folder to wherever you collect them.
+
+## What it does and doesn't do
+
+- Only reads settings. It needs no admin password and changes nothing.
+- Writes files only to the `mac-security-check` folder on the Desktop.
+- Sends nothing anywhere. Its only network calls ask Apple for the current macOS releases (`gdmf.apple.com`), check for updates (`softwareupdate`) and, in `--company` mode, compare the clock with `time.apple.com`.
+- The only things it opens are System Settings pages (when you ask it to, on a fail), the screenshot picker and the results folder.
 
 ## Run it
 
@@ -23,7 +30,7 @@ Company-owned Mac:
 curl -fsSL https://raw.githubusercontent.com/maudlin/mac-security-check/main/device-posture.sh | zsh -s -- --company
 ```
 
-These always run the latest version. Each record and screenshot shows the script version (e.g. `v1.2`), and every version is tagged in this repo, so any record can be traced back to the exact code that produced it.
+These always run the latest version. Each record and screenshot shows the script version (e.g. `v1.3`), and every version is tagged in this repo, so any record can be traced back to the exact code that produced it.
 
 ## Checks
 
